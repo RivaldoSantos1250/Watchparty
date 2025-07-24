@@ -49,11 +49,14 @@
                 </div>
             </div>
             <div id="player-container" class="w-full flex-grow bg-black flex items-center justify-center rounded-2xl overflow-hidden">
-                <div id="player-placeholder" class="text-gray-500"><p>Cole um link do YouTube abaixo para começar.</p></div>
-                <div id="player" class="w-full h-full"></div>
+                <div id="player-placeholder" class="text-gray-500"><p>Cole um link de vídeo (YouTube, .mp4, etc.) abaixo.</p></div>
+                <!-- Leitor do YouTube -->
+                <div id="youtube-player" class="w-full h-full"></div>
+                <!-- Leitor de Vídeo HTML5 -->
+                <video id="html5-player" class="hidden w-full h-full" controls></video>
             </div>
             <div class="mt-4 flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2">
-                <input type="text" id="video-url-input" placeholder="Cole o link do vídeo do YouTube aqui" class="flex-grow bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <input type="text" id="video-url-input" placeholder="Cole o link do vídeo aqui" class="flex-grow bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
                 <button id="change-video-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition duration-300">
                     Carregar Vídeo
                 </button>
@@ -87,11 +90,12 @@
         const socket = io(BACKEND_URL);
 
         // --- VARIÁVEIS GLOBAIS ---
-        let player;
+        let ytPlayer, html5Player;
+        let activePlayerType = null;
         let currentRoomId = null;
         let userId = `user_${Math.random().toString(36).substring(2, 9)}`;
         let isUpdatingFromSocket = false;
-        const SYNC_THRESHOLD = 2;
+        const SYNC_THRESHOLD = 2.5;
 
         // --- ELEMENTOS DO DOM ---
         const modal = document.getElementById('room-modal');
@@ -101,7 +105,8 @@
         const joinRoomInput = document.getElementById('join-room-input');
         const roomIdDisplay = document.getElementById('room-id-display');
         const copyRoomIdBtn = document.getElementById('copy-room-id');
-        const playerElement = document.getElementById('player');
+        const ytPlayerEl = document.getElementById('youtube-player');
+        html5Player = document.getElementById('html5-player');
         const playerPlaceholder = document.getElementById('player-placeholder');
         const videoUrlInput = document.getElementById('video-url-input');
         const changeVideoBtn = document.getElementById('change-video-btn');
@@ -113,12 +118,7 @@
         userIdDisplay.textContent = userId;
 
         // --- LÓGICA DE CONEXÃO E SALAS ---
-        createRoomBtn.addEventListener('click', () => {
-            socket.emit('create-room', (roomId) => {
-                joinRoom(roomId);
-            });
-        });
-
+        createRoomBtn.addEventListener('click', () => socket.emit('create-room', joinRoom));
         joinRoomBtn.addEventListener('click', () => {
             const roomId = joinRoomInput.value.trim().toUpperCase();
             if (roomId) joinRoom(roomId);
@@ -137,97 +137,128 @@
             });
         }
 
-        // --- RECEBER EVENTOS DO SERVIDOR (SOCKET.IO) ---
-        socket.on('connect', () => {
-            console.log('Conectado ao servidor de backend!', socket.id);
-        });
+        // --- RECEBER EVENTOS DO SERVIDOR ---
+        socket.on('connect', () => console.log('Conectado ao servidor de backend!', socket.id));
 
-        socket.on('initial-state', (videoState) => {
-            if (videoState.videoId) {
+        socket.on('initial-state', ({ videoInfo, state, time }) => {
+            if (videoInfo) {
                 isUpdatingFromSocket = true;
-                createPlayer(videoState.videoId, () => {
-                    player.seekTo(videoState.time, true);
-                    if (videoState.state === 'PLAYING') player.playVideo();
-                    else player.pauseVideo();
+                loadVideo(videoInfo, () => {
+                    if (activePlayerType === 'youtube') {
+                        ytPlayer.seekTo(time, true);
+                        state === 'PLAYING' ? ytPlayer.playVideo() : ytPlayer.pauseVideo();
+                    } else if (activePlayerType === 'html5') {
+                        html5Player.currentTime = time;
+                        state === 'PLAYING' ? html5Player.play() : html5Player.pause();
+                    }
                     setTimeout(() => isUpdatingFromSocket = false, 1000);
                 });
             }
         });
 
-        socket.on('video-changed', (videoId) => {
+        socket.on('video-changed', (videoInfo) => {
             isUpdatingFromSocket = true;
-            if (player) {
-                player.loadVideoById(videoId);
-            } else {
-                createPlayer(videoId);
-            }
+            loadVideo(videoInfo);
             setTimeout(() => isUpdatingFromSocket = false, 500);
         });
 
         socket.on('video-synced', ({ state, time }) => {
-            if (!player) return;
+            if (!activePlayerType) return;
             isUpdatingFromSocket = true;
             
-            const timeDifference = Math.abs(player.getCurrentTime() - time);
-            if (timeDifference > SYNC_THRESHOLD) {
-                player.seekTo(time, true);
+            let playerTime = 0;
+            if (activePlayerType === 'youtube') playerTime = ytPlayer.getCurrentTime();
+            if (activePlayerType === 'html5') playerTime = html5Player.currentTime;
+
+            if (Math.abs(playerTime - time) > SYNC_THRESHOLD) {
+                if (activePlayerType === 'youtube') ytPlayer.seekTo(time, true);
+                if (activePlayerType === 'html5') html5Player.currentTime = time;
             }
 
-            if (state === 'PLAYING' && player.getPlayerState() !== 1) {
-                player.playVideo();
-            } else if (state === 'PAUSED' && player.getPlayerState() !== 2) {
-                player.pauseVideo();
+            if (state === 'PLAYING') {
+                if (activePlayerType === 'youtube' && ytPlayer.getPlayerState() !== 1) ytPlayer.playVideo();
+                if (activePlayerType === 'html5' && html5Player.paused) html5Player.play();
+            } else if (state === 'PAUSED') {
+                if (activePlayerType === 'youtube' && ytPlayer.getPlayerState() !== 2) ytPlayer.pauseVideo();
+                if (activePlayerType === 'html5' && !html5Player.paused) html5Player.pause();
             }
             setTimeout(() => isUpdatingFromSocket = false, 500);
         });
 
-        socket.on('new-chat-message', (message) => {
-            displayMessage(message);
-        });
-
-        // --- LÓGICA DO PLAYER DO YOUTUBE ---
+        socket.on('new-chat-message', displayMessage);
+        
+        // --- GESTÃO DOS LEITORES DE VÍDEO ---
         window.onYouTubeIframeAPIReady = () => {};
 
-        function createPlayer(videoId, onReadyCallback = () => {}) {
-            if (player) player.destroy();
+        function loadVideo(videoInfo, onReadyCallback = () => {}) {
             playerPlaceholder.classList.add('hidden');
-            playerElement.classList.remove('hidden');
-            player = new YT.Player('player', {
-                height: '100%', width: '100%', videoId,
-                playerVars: { 'playsinline': 1, 'controls': 1, 'rel': 0 },
-                events: { 'onReady': onPlayerReady(onReadyCallback), 'onStateChange': onPlayerStateChange }
-            });
-        }
-
-        function onPlayerReady(callback) {
-            return (event) => {
-                console.log("Player pronto.");
-                callback(event);
-                // Sincronização periódica para garantir consistência
-                setInterval(() => {
-                    if (player && player.getPlayerState && player.getPlayerState() === 1 && !isUpdatingFromSocket) {
-                        socket.emit('video-sync', { roomId: currentRoomId, state: 'PLAYING', time: player.getCurrentTime() });
-                    }
-                }, 3000);
+            if (videoInfo.type === 'youtube') {
+                activePlayerType = 'youtube';
+                html5Player.classList.add('hidden');
+                ytPlayerEl.classList.remove('hidden');
+                if (ytPlayer) {
+                    ytPlayer.loadVideoById(videoInfo.id);
+                } else {
+                    ytPlayer = new YT.Player('youtube-player', {
+                        height: '100%', width: '100%', videoId: videoInfo.id,
+                        playerVars: { 'playsinline': 1, 'controls': 1, 'rel': 0 },
+                        events: { 'onReady': (e) => onYouTubePlayerReady(e, onReadyCallback), 'onStateChange': onYouTubePlayerStateChange }
+                    });
+                }
+            } else if (videoInfo.type === 'html5') {
+                activePlayerType = 'html5';
+                ytPlayerEl.classList.add('hidden');
+                html5Player.classList.remove('hidden');
+                if (ytPlayer) ytPlayer.stopVideo(); // Para o som do YouTube
+                html5Player.src = videoInfo.url;
+                onReadyCallback();
             }
         }
 
-        function onPlayerStateChange(event) {
+        // --- HANDLERS DE EVENTOS DOS LEITORES ---
+        function onYouTubePlayerReady(event, callback) {
+            console.log("Leitor do YouTube pronto.");
+            callback(event);
+        }
+
+        function onYouTubePlayerStateChange(event) {
             if (isUpdatingFromSocket) return;
             const state = event.data === 1 ? 'PLAYING' : 'PAUSED';
-            const time = player.getCurrentTime();
-            socket.emit('video-sync', { roomId: currentRoomId, state, time });
+            socket.emit('video-sync', { roomId: currentRoomId, state, time: ytPlayer.getCurrentTime() });
         }
+        
+        html5Player.addEventListener('play', () => {
+            if (isUpdatingFromSocket) return;
+            socket.emit('video-sync', { roomId: currentRoomId, state: 'PLAYING', time: html5Player.currentTime });
+        });
+        html5Player.addEventListener('pause', () => {
+            if (isUpdatingFromSocket) return;
+            socket.emit('video-sync', { roomId: currentRoomId, state: 'PAUSED', time: html5Player.currentTime });
+        });
+        html5Player.addEventListener('seeked', () => {
+            if (isUpdatingFromSocket) return;
+            socket.emit('video-sync', { roomId: currentRoomId, state: html5Player.paused ? 'PAUSED' : 'PLAYING', time: html5Player.currentTime });
+        });
+
+        // Sincronização periódica
+        setInterval(() => {
+            if (isUpdatingFromSocket) return;
+            if (activePlayerType === 'youtube' && ytPlayer && ytPlayer.getPlayerState && ytPlayer.getPlayerState() === 1) {
+                socket.emit('video-sync', { roomId: currentRoomId, state: 'PLAYING', time: ytPlayer.getCurrentTime() });
+            } else if (activePlayerType === 'html5' && !html5Player.paused) {
+                socket.emit('video-sync', { roomId: currentRoomId, state: 'PLAYING', time: html5Player.currentTime });
+            }
+        }, 3000);
 
         // --- EMITIR EVENTOS PARA O SERVIDOR ---
         changeVideoBtn.addEventListener('click', () => {
             const url = videoUrlInput.value.trim();
-            const videoId = extractYouTubeID(url);
-            if (videoId) {
-                socket.emit('video-change', { roomId: currentRoomId, videoId });
+            const videoInfo = getVideoInfo(url);
+            if (videoInfo) {
+                socket.emit('video-change', { roomId: currentRoomId, videoInfo });
                 videoUrlInput.value = '';
             } else {
-                alert("URL do YouTube inválida.");
+                alert("URL de vídeo inválida. Use um link do YouTube ou um link direto para um ficheiro de vídeo (.mp4, .webm).");
             }
         });
 
@@ -241,12 +272,24 @@
             if (text) {
                 const message = { senderId: userId, text };
                 socket.emit('chat-message', { roomId: currentRoomId, message });
-                displayMessage(message); // Mostra a própria mensagem imediatamente
+                displayMessage(message);
                 chatInput.value = '';
             }
         }
 
         // --- FUNÇÕES UTILITÁRIAS ---
+        function getVideoInfo(url) {
+            const ytRegex = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+            const ytMatch = url.match(ytRegex);
+            if (ytMatch && ytMatch[2].length === 11) {
+                return { type: 'youtube', id: ytMatch[2] };
+            }
+            if (url.match(/\.(mp4|webm|ogv|mov)$/i)) {
+                return { type: 'html5', url: url };
+            }
+            return null;
+        }
+
         function displayMessage({ senderId, text }) {
             const messageElement = document.createElement('div');
             const isMe = senderId === userId;
@@ -259,12 +302,6 @@
             `;
             chatMessages.appendChild(messageElement);
             chatMessages.scrollTop = chatMessages.scrollHeight;
-        }
-
-        function extractYouTubeID(url) {
-            const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
-            const match = url.match(regExp);
-            return (match && match[2].length === 11) ? match[2] : null;
         }
 
         copyRoomIdBtn.addEventListener('click', () => {
