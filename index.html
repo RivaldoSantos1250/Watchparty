@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Watch Party com Node.js</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        #chat-messages { scroll-behavior: smooth; }
+        .message { max-width: 85%; }
+    </style>
+</head>
+<body class="bg-gray-900 text-white antialiased">
+
+    <!-- Modal de Entrada -->
+    <div id="room-modal" class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-2xl p-8 shadow-2xl w-full max-w-md transform transition-all">
+            <h2 class="text-2xl font-bold text-center mb-6">Bem-vindo ao Watch Party!</h2>
+            <div class="space-y-4">
+                <button id="create-room-btn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition duration-300">
+                    Criar Nova Sala
+                </button>
+                <div class="relative flex items-center">
+                    <div class="flex-grow border-t border-gray-600"></div><span class="flex-shrink mx-4 text-gray-400">ou</span><div class="flex-grow border-t border-gray-600"></div>
+                </div>
+                <div class="flex space-x-2">
+                    <input type="text" id="join-room-input" placeholder="Digite o ID da sala" class="flex-grow bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <button id="join-room-btn" class="bg-gray-600 hover:bg-gray-500 text-white font-bold py-3 px-4 rounded-lg transition duration-300">
+                        Entrar
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Conteúdo Principal -->
+    <div id="main-content" class="hidden h-screen w-screen flex flex-col lg:flex-row">
+        <!-- Seção do Vídeo -->
+        <main class="flex-grow flex flex-col bg-black p-4">
+            <div class="w-full bg-gray-800 rounded-lg p-2 mb-4">
+                 <div class="flex items-center space-x-2">
+                    <span class="text-sm font-medium text-gray-400">ID da Sala:</span>
+                    <input id="room-id-display" type="text" readonly class="bg-transparent font-mono text-indigo-400 flex-grow focus:outline-none">
+                    <button id="copy-room-id" class="text-gray-400 hover:text-white transition">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z"></path><path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z"></path></svg>
+                    </button>
+                </div>
+            </div>
+            <div id="player-container" class="w-full flex-grow bg-black flex items-center justify-center rounded-2xl overflow-hidden">
+                <div id="player-placeholder" class="text-gray-500"><p>Cole um link do YouTube abaixo para começar.</p></div>
+                <div id="player" class="w-full h-full"></div>
+            </div>
+            <div class="mt-4 flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2">
+                <input type="text" id="video-url-input" placeholder="Cole o link do vídeo do YouTube aqui" class="flex-grow bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                <button id="change-video-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition duration-300">
+                    Carregar Vídeo
+                </button>
+            </div>
+        </main>
+
+        <!-- Seção do Chat -->
+        <aside class="w-full lg:w-96 bg-gray-800 flex flex-col h-1/3 lg:h-full flex-shrink-0">
+            <div class="p-4 border-b border-gray-700">
+                <h2 class="text-xl font-bold">Chat da Sala</h2>
+                <p class="text-xs text-gray-400">Seu ID de utilizador: <span id="user-id-display" class="font-mono"></span></p>
+            </div>
+            <div id="chat-messages" class="flex-grow p-4 space-y-4 overflow-y-auto"></div>
+            <div class="p-4 border-t border-gray-700">
+                <div class="flex space-x-2">
+                    <input type="text" id="chat-input" placeholder="Digite sua mensagem..." class="flex-grow bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <button id="send-chat-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white p-3 rounded-lg transition duration-300">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
+                    </button>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://www.youtube.com/iframe_api"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script>
+        // !!! IMPORTANTE: Substitua pelo URL do seu backend no Render !!!
+        const BACKEND_URL = "https://seu-backend.onrender.com";
+        const socket = io(BACKEND_URL);
+
+        // --- VARIÁVEIS GLOBAIS ---
+        let player;
+        let currentRoomId = null;
+        let userId = `user_${Math.random().toString(36).substring(2, 9)}`;
+        let isUpdatingFromSocket = false;
+        const SYNC_THRESHOLD = 2;
+
+        // --- ELEMENTOS DO DOM ---
+        const modal = document.getElementById('room-modal');
+        const mainContent = document.getElementById('main-content');
+        const createRoomBtn = document.getElementById('create-room-btn');
+        const joinRoomBtn = document.getElementById('join-room-btn');
+        const joinRoomInput = document.getElementById('join-room-input');
+        const roomIdDisplay = document.getElementById('room-id-display');
+        const copyRoomIdBtn = document.getElementById('copy-room-id');
+        const playerElement = document.getElementById('player');
+        const playerPlaceholder = document.getElementById('player-placeholder');
+        const videoUrlInput = document.getElementById('video-url-input');
+        const changeVideoBtn = document.getElementById('change-video-btn');
+        const chatMessages = document.getElementById('chat-messages');
+        const chatInput = document.getElementById('chat-input');
+        const sendChatBtn = document.getElementById('send-chat-btn');
+        const userIdDisplay = document.getElementById('user-id-display');
+        
+        userIdDisplay.textContent = userId;
+
+        // --- LÓGICA DE CONEXÃO E SALAS ---
+        createRoomBtn.addEventListener('click', () => {
+            socket.emit('create-room', (roomId) => {
+                joinRoom(roomId);
+            });
+        });
+
+        joinRoomBtn.addEventListener('click', () => {
+            const roomId = joinRoomInput.value.trim().toUpperCase();
+            if (roomId) joinRoom(roomId);
+        });
+        
+        function joinRoom(roomId) {
+            socket.emit('join-room', { roomId, userId }, (response) => {
+                if (response.error) {
+                    alert(response.error);
+                    return;
+                }
+                currentRoomId = roomId;
+                roomIdDisplay.value = currentRoomId;
+                modal.classList.add('hidden');
+                mainContent.classList.remove('hidden');
+            });
+        }
+
+        // --- RECEBER EVENTOS DO SERVIDOR (SOCKET.IO) ---
+        socket.on('connect', () => {
+            console.log('Conectado ao servidor de backend!', socket.id);
+        });
+
+        socket.on('initial-state', (videoState) => {
+            if (videoState.videoId) {
+                isUpdatingFromSocket = true;
+                createPlayer(videoState.videoId, () => {
+                    player.seekTo(videoState.time, true);
+                    if (videoState.state === 'PLAYING') player.playVideo();
+                    else player.pauseVideo();
+                    setTimeout(() => isUpdatingFromSocket = false, 1000);
+                });
+            }
+        });
+
+        socket.on('video-changed', (videoId) => {
+            isUpdatingFromSocket = true;
+            if (player) {
+                player.loadVideoById(videoId);
+            } else {
+                createPlayer(videoId);
+            }
+            setTimeout(() => isUpdatingFromSocket = false, 500);
+        });
+
+        socket.on('video-synced', ({ state, time }) => {
+            if (!player) return;
+            isUpdatingFromSocket = true;
+            
+            const timeDifference = Math.abs(player.getCurrentTime() - time);
+            if (timeDifference > SYNC_THRESHOLD) {
+                player.seekTo(time, true);
+            }
+
+            if (state === 'PLAYING' && player.getPlayerState() !== 1) {
+                player.playVideo();
+            } else if (state === 'PAUSED' && player.getPlayerState() !== 2) {
+                player.pauseVideo();
+            }
+            setTimeout(() => isUpdatingFromSocket = false, 500);
+        });
+
+        socket.on('new-chat-message', (message) => {
+            displayMessage(message);
+        });
+
+        // --- LÓGICA DO PLAYER DO YOUTUBE ---
+        window.onYouTubeIframeAPIReady = () => {};
+
+        function createPlayer(videoId, onReadyCallback = () => {}) {
+            if (player) player.destroy();
+            playerPlaceholder.classList.add('hidden');
+            playerElement.classList.remove('hidden');
+            player = new YT.Player('player', {
+                height: '100%', width: '100%', videoId,
+                playerVars: { 'playsinline': 1, 'controls': 1, 'rel': 0 },
+                events: { 'onReady': onPlayerReady(onReadyCallback), 'onStateChange': onPlayerStateChange }
+            });
+        }
+
+        function onPlayerReady(callback) {
+            return (event) => {
+                console.log("Player pronto.");
+                callback(event);
+                // Sincronização periódica para garantir consistência
+                setInterval(() => {
+                    if (player && player.getPlayerState && player.getPlayerState() === 1 && !isUpdatingFromSocket) {
+                        socket.emit('video-sync', { roomId: currentRoomId, state: 'PLAYING', time: player.getCurrentTime() });
+                    }
+                }, 3000);
+            }
+        }
+
+        function onPlayerStateChange(event) {
+            if (isUpdatingFromSocket) return;
+            const state = event.data === 1 ? 'PLAYING' : 'PAUSED';
+            const time = player.getCurrentTime();
+            socket.emit('video-sync', { roomId: currentRoomId, state, time });
+        }
+
+        // --- EMITIR EVENTOS PARA O SERVIDOR ---
+        changeVideoBtn.addEventListener('click', () => {
+            const url = videoUrlInput.value.trim();
+            const videoId = extractYouTubeID(url);
+            if (videoId) {
+                socket.emit('video-change', { roomId: currentRoomId, videoId });
+                videoUrlInput.value = '';
+            } else {
+                alert("URL do YouTube inválida.");
+            }
+        });
+
+        sendChatBtn.addEventListener('click', sendChatMessage);
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendChatMessage();
+        });
+
+        function sendChatMessage() {
+            const text = chatInput.value.trim();
+            if (text) {
+                const message = { senderId: userId, text };
+                socket.emit('chat-message', { roomId: currentRoomId, message });
+                displayMessage(message); // Mostra a própria mensagem imediatamente
+                chatInput.value = '';
+            }
+        }
+
+        // --- FUNÇÕES UTILITÁRIAS ---
+        function displayMessage({ senderId, text }) {
+            const messageElement = document.createElement('div');
+            const isMe = senderId === userId;
+            messageElement.classList.add('flex', 'flex-col', isMe ? 'items-end' : 'items-start');
+            messageElement.innerHTML = `
+                <div class="message rounded-xl px-4 py-2 ${isMe ? 'bg-indigo-600 rounded-br-none' : 'bg-gray-600 rounded-bl-none'}">
+                   <p class="text-sm">${text}</p>
+                </div>
+                <span class="text-xs text-gray-400 mt-1 px-1">${senderId.substring(0, 10)}</span>
+            `;
+            chatMessages.appendChild(messageElement);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function extractYouTubeID(url) {
+            const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+            const match = url.match(regExp);
+            return (match && match[2].length === 11) ? match[2] : null;
+        }
+
+        copyRoomIdBtn.addEventListener('click', () => {
+            roomIdDisplay.select();
+            document.execCommand('copy');
+            alert('ID da sala copiado!');
+        });
+    </script>
+</body>
+</html>
