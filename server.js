@@ -11,7 +11,7 @@ const server = http.createServer(app);
 // O 'cors' permite que o nosso frontend (em um domínio diferente) se conecte a este backend
 const io = new Server(server, {
   cors: {
-    origin: "*", // Em produção, você deve restringir isso ao URL do seu frontend
+    origin: "*", // Em produção, você deve restringir isto ao URL do seu frontend
     methods: ["GET", "POST"]
   }
 });
@@ -33,8 +33,9 @@ io.on('connection', (socket) => {
     const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
     rooms[roomId] = {
       users: [],
+      // O videoState agora armazena o objeto videoInfo completo
       videoState: {
-        videoId: null,
+        videoInfo: null,
         state: 'PAUSED',
         time: 0,
       }
@@ -63,12 +64,12 @@ io.on('connection', (socket) => {
   // --- SINCRONIZAÇÃO DE VÍDEO ---
 
   // Quando alguém muda o vídeo
-  socket.on('video-change', ({ roomId, videoId }) => {
+  socket.on('video-change', ({ roomId, videoInfo }) => {
     if (rooms[roomId]) {
-      rooms[roomId].videoState = { videoId, state: 'PAUSED', time: 0 };
+      rooms[roomId].videoState = { videoInfo, state: 'PAUSED', time: 0 };
       // Envia a mudança para TODOS na sala, incluindo quem mudou
-      io.to(roomId).emit('video-changed', videoId);
-      console.log(`Vídeo alterado na sala ${roomId} para ${videoId}`);
+      io.to(roomId).emit('video-changed', videoInfo);
+      console.log(`Vídeo alterado na sala ${roomId} para ${videoInfo.id || videoInfo.url}`);
     }
   });
 
